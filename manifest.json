@@ -1,6 +1,6 @@
 {
-  "manifestVersion": "2026-10-26-r1",
-  "validatedInstanceTypes": ["g6e.2xlarge"],
+  "manifestVersion": "2026-10-26-r2",
+  "validatedInstanceTypes": ["g6e.2xlarge", "g7e.2xlarge"],
   "models": [
     {
       "name": "colabdesign",
