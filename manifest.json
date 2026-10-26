@@ -1,0 +1,79 @@
+{
+  "manifestVersion": "2026-10-26-r1",
+  "validatedInstanceTypes": ["g6e.2xlarge"],
+  "models": [
+    {
+      "name": "colabdesign",
+      "role": "binder backbone generation",
+      "image": "lifebit-platform/gpu-session-colabdesign",
+      "imageDigest": "sha256:f457bf5b8f1e2f556fbbb70a3524e1c25e416d387a0604fc0139db6c6911068c",
+      "mode": "fast",
+      "modeReason": "L40S profile tested through the end-to-end smoke workflow using the baked image.",
+      "extraFlags": [],
+      "minDriver": "580",
+      "weights": {
+        "path": "/weights/af2",
+        "envVar": "COLABDESIGN_PARAMS_DIR",
+        "installCommand": "bash /kit/colabdesign/run.sh install --weights /weights/af2",
+        "approxSizeGb": 6,
+        "mirrorPrefix": "weights/colabdesign"
+      },
+      "workDir": "/work",
+      "entrypointHint": "python /opt/lifebit/model_runtime.py colabdesign design --starting-pdb {absoluteTargetPdb} --chains {targetChains} --binder-len {binderLength} --target-hotspot-residues {hotspots} --seed {seed} --out {freshAbsoluteOutDir}",
+      "guidance": "Generate one binder backbone per seed into a fresh directory under /work. Review design.pdb, design.fasta, trajectory.jsonl and run.log before selecting a candidate for redesign. Successful execution alone does not establish scientific acceptance. Use absolute paths: the runtime invokes the kit from its own directory. Mode, config and hybrid_gemm are controlled by the runtime; do not repeat those flags. Assets must already be provisioned; installCommand is a provisioning operation requiring writable weights."
+    },
+    {
+      "name": "proteinmpnn",
+      "role": "sequence redesign",
+      "image": "lifebit-platform/gpu-session-proteinmpnn",
+      "imageDigest": "sha256:c06e97d7cf2d0edc308171da042cdd6b1e88b7663fc1791915ce2353d2693c16",
+      "mode": "exact",
+      "modeReason": "Tested L40S profile: the runtime selects exact mode with --config h100 and --hybrid_gemm 0. Exact is the kit mode name and does not establish bitwise equivalence to an H100 run.",
+      "extraFlags": [],
+      "minDriver": "580",
+      "weights": {
+        "path": "/weights/proteinmpnn",
+        "envVar": "MPNN_DIR",
+        "installCommand": "bash /kit/proteinmpnn/run.sh install --weights /weights/proteinmpnn",
+        "approxSizeGb": 1,
+        "mirrorPrefix": "weights/proteinmpnn"
+      },
+      "workDir": "/work",
+      "entrypointHint": "python /opt/lifebit/model_runtime.py proteinmpnn design --variant soluble --jsonl_path {absoluteParsedJsonl} --chain_id_jsonl {absoluteChainsJsonl} --fixed_positions_jsonl {absoluteFixedJsonl} --out_folder {freshAbsoluteOutDir} --seed {seed} --num_seq_per_target {numSequences} --batch_size 1 --sampling_temp 0.1 --save_score 1",
+      "guidance": "First prepare the complex with general's prepare_complex_for_mpnn.py. Then run parse_multiple_chains.py, assign_fixed_chains.py and make_fixed_positions_dict.py from $MPNN_DIR/helper_scripts in this image. Design only the binder chain and preserve the preparation step's interface residues using its ProteinMPNN parser numbering. Before co-folding, verify binder length and every fixed residue against the prepared reference. MPNN_DIR must contain the pinned source checkout, helpers and soluble weights. Use absolute paths and a fresh output directory. Mode, config and hybrid_gemm are supplied by the runtime. installCommand is for asset provisioning, not ordinary execution."
+    },
+    {
+      "name": "boltz2",
+      "role": "complex co-folding",
+      "image": "lifebit-platform/gpu-session-boltz2",
+      "imageDigest": "sha256:137bb6334d813ec475eb5fe5cf6da4d99a6a98ae4cae51b3173c30bbb2979bf7",
+      "mode": "off",
+      "modeReason": "Tested stock prediction route on L40S. The runtime supplies --config h100 and --mode off; optimized prediction modes are not enabled.",
+      "extraFlags": [],
+      "minDriver": "580",
+      "weights": {
+        "path": "/weights/boltz2",
+        "envVar": "BOLTZ_CACHE",
+        "installCommand": "bash /kit/boltz2/run.sh install --weights /weights/boltz2",
+        "approxSizeGb": 6,
+        "mirrorPrefix": "weights/boltz2"
+      },
+      "workDir": "/work",
+      "entrypointHint": "python /opt/lifebit/model_runtime.py boltz2 pred --input {absoluteInputYaml} --out_dir {freshAbsoluteOutDir} --seed {seed} --write_full_pae --write_full_pde",
+      "guidance": "Co-fold the redesigned binder with its target using YAML produced by general's make_boltz_input.py. Specify the MSA strategy explicitly: the smoke workflow uses single-query MSAs; use fixed approved MSAs for reproducible comparisons and an external MSA service only when appropriate for the input data. Use a fresh output directory and request full PAE for downstream scoring. Match each predicted CIF with its corresponding PAE NPZ and preserve chain identities and lengths. The stock route supports pred only. Assets include checkpoints, CCD and molecule support files; installCommand is a provisioning operation."
+    },
+    {
+      "name": "general",
+      "role": "preparation and scoring",
+      "image": "lifebit-platform/gpu-session-general",
+      "imageDigest": "sha256:b247a880931e373b2e881ccdec4827900b9cb8715f9d40a2790185e1065ecafa",
+      "mode": "off",
+      "extraFlags": [],
+      "minDriver": "580",
+      "workDir": "/work",
+      "entrypointHint": "python /opt/lifebit/tools/{helper}.py {args}",
+      "guidance": "Runs CPU preparation and scoring within the session; no external model weights are required. Helpers include prepare_complex_for_mpnn.py, make_boltz_input.py, score_complex.py and summarize_scores.py. Read each helper's --help before constructing its arguments. Build Boltz input from the selected numbered redesign sample after checking fixed residues. Score matching structure/PAE pairs, preserve raw scoring evidence and aggregate results with summarize_scores.py. Scores describe computational confidence, not experimental binding."
+    }
+  ],
+  "workflow": "Run stages serially in one session: generate backbones with colabdesign; review and select a candidate; prepare its complex with general; build ProteinMPNN helper inputs and redesign only the binder while preserving interface residues; verify sequence length and fixed residues; build Boltz YAML and explicit MSA inputs with general; co-fold with boltz2; then score and summarise with general. Use separate stage directories and absolute paths under /work. Inspect each stage's outputs before constructing the next call. Mode and optimization flags are controlled by the runtime. Assets must be provisioned before model execution and mounted read-only for ordinary jobs. The session launcher must provide writable /work and /jit mounts and appropriate SELinux bind-mount labels, including :z where shared relabeling is required. Do not change host security settings from model tasks. Copy final deliverables into the current task's declared output paths and verify upload success; session files under /work are not durable storage. Passing the smoke workflow establishes execution compatibility, not scientific qualification or experimental binding."
+}
